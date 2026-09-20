@@ -11,11 +11,16 @@ const path = require("path");
 
 const app = express();
 
+/* =========================================================
+   CONFIGURATION
+========================================================= */
+
 const PORT = Number(process.env.PORT || 10000);
 
-const BASE_URL =
-  (process.env.BASE_URL ||
-    `http://localhost:${PORT}`).replace(/\/$/, "");
+const BASE_URL = (
+  process.env.BASE_URL ||
+  `http://localhost:${PORT}`
+).replace(/\/$/, "");
 
 const CLIENT_KEY =
   process.env.TIKTOK_CLIENT_KEY || "";
@@ -29,29 +34,37 @@ const REDIRECT_URI =
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
-  "CHANGE_THIS_SECRET";
+  "CHANGE_THIS_TO_A_LONG_RANDOM_SECRET";
 
 /*
-========================================================
-TIKTOK PRODUCTS
-========================================================
+   IMPORTANT:
 
-Current TikTok Developer products include:
+   Only request scopes that your TikTok application
+   has actually been configured/approved for.
 
-- Login Kit
-- Share Kit
-- Content Posting API
-- Research API
-- Display API
-- Embed Videos
-- Data Portability API
-- Green Screen Kit
-- Commercial Content API
+   Default:
+   - user.info.basic
+   - video.list
 
-Some products are SDKs/tools rather than OAuth scopes,
-so they cannot simply be enabled by putting a scope
-string into the authorization URL.
+   If TikTok has approved additional scopes for your app,
+   set TIKTOK_SCOPES in Render, for example:
+
+   user.info.basic,user.info.profile,user.info.stats,video.list
+
 */
+
+const REQUESTED_SCOPES = (
+  process.env.TIKTOK_SCOPES ||
+  "user.info.basic,video.list"
+)
+  .split(",")
+  .map(x => x.trim())
+  .filter(Boolean);
+
+
+/* =========================================================
+   TIKTOK PRODUCTS
+========================================================= */
 
 const TIKTOK_PRODUCTS = [
   "Login Kit",
@@ -65,37 +78,22 @@ const TIKTOK_PRODUCTS = [
   "Commercial Content API"
 ];
 
-/*
-========================================================
-CURRENT DOCUMENTED SCOPES
-========================================================
 
-These are represented here so the application knows
-about them.
-
-IMPORTANT:
-Do NOT assume all of these can be requested by every app.
-TikTok requires the appropriate product/scope approval.
-
-The default OAuth request below deliberately uses the
-user/video scopes normally associated with the web API.
-*/
+/* =========================================================
+   DOCUMENTED SCOPES
+========================================================= */
 
 const ALL_DOCUMENTED_SCOPES = [
 
-  // User information
   "user.info.basic",
   "user.info.profile",
   "user.info.stats",
 
-  // Display / video
   "video.list",
 
-  // Content Posting
   "video.publish",
   "video.upload",
 
-  // Data Portability
   "portability.activity.ongoing",
   "portability.activity.single",
 
@@ -108,100 +106,41 @@ const ALL_DOCUMENTED_SCOPES = [
   "portability.postsandprofile.ongoing",
   "portability.postsandprofile.single",
 
-  // Research
   "research.data.basic",
   "research.data.u18eu",
   "research.data.vra",
 
-  // Research / Commercial Content
   "research.adlib.basic",
 
-  // Local Service
   "local.product.manage",
   "local.shop.manage",
   "local.voucher.manage"
 ];
 
-/*
-========================================================
-OAUTH SCOPES
-========================================================
 
-You can override these with:
-
-TIKTOK_SCOPES=
-
-in Render environment variables.
-
-Do not put every documented scope into a real OAuth
-request unless your TikTok app has those scopes enabled
-and your use case has been approved.
-*/
-
-const REQUESTED_SCOPES = (
-  process.env.TIKTOK_SCOPES ||
-  [
-    "user.info.basic",
-    "user.info.profile",
-    "user.info.stats",
-    "video.list",
-    "video.publish",
-    "video.upload"
-  ].join(",")
-)
-  .split(",")
-  .map(x => x.trim())
-  .filter(Boolean);
-
-/*
-========================================================
-DIRECTORIES
-========================================================
-*/
-
-const PUBLIC_DIR =
-  path.join(__dirname, "public");
-
-const UPLOAD_DIR =
-  path.join(PUBLIC_DIR, "uploads");
-
-fs.mkdirSync(PUBLIC_DIR, {
-  recursive: true
-});
-
-fs.mkdirSync(UPLOAD_DIR, {
-  recursive: true
-});
-
-/*
-========================================================
-MIDDLEWARE
-========================================================
-*/
+/* =========================================================
+   MIDDLEWARE
+========================================================= */
 
 app.use(
   express.json({
-    limit: "20mb"
+    limit: "50mb"
   })
 );
 
 app.use(
   express.urlencoded({
-    extended: true
+    extended: true,
+    limit: "50mb"
   })
 );
 
 app.use(cookieParser());
 
-app.use(
-  express.static(PUBLIC_DIR)
-);
 
-/*
-========================================================
-SECURITY HEADERS
-========================================================
-*/
+/* =========================================================
+   SECURITY HEADERS
+========================================================= */
 
 app.use((req, res, next) => {
 
@@ -215,109 +154,35 @@ app.use((req, res, next) => {
     "strict-origin-when-cross-origin"
   );
 
+  res.setHeader(
+    "X-Frame-Options",
+    "SAMEORIGIN"
+  );
+
   next();
 
 });
 
-/*
-========================================================
-UPLOAD
-========================================================
-*/
 
-const storage =
-  multer.diskStorage({
+/* =========================================================
+   SESSION STORAGE
+=========================================================
 
-    destination(req, file, cb) {
+   Temporary memory storage.
 
-      cb(null, UPLOAD_DIR);
+   If Render restarts the service, sessions disappear.
 
-    },
+   For production, use Supabase/PostgreSQL/Redis.
+========================================================= */
 
-    filename(req, file, cb) {
+const sessions = new Map();
 
-      const extension =
-        path.extname(
-          file.originalname
-        ).toLowerCase();
 
-      const random =
-        crypto
-          .randomBytes(16)
-          .toString("hex");
+/* =========================================================
+   HELPER FUNCTIONS
+========================================================= */
 
-      cb(
-        null,
-        `${Date.now()}-${random}${extension}`
-      );
-
-    }
-
-  });
-
-const upload =
-  multer({
-
-    storage,
-
-    limits: {
-      fileSize:
-        100 * 1024 * 1024
-    },
-
-    fileFilter(req, file, cb) {
-
-      const allowed = [
-        "video/mp4",
-        "video/webm",
-        "video/quicktime"
-      ];
-
-      if (
-        allowed.includes(
-          file.mimetype
-        )
-      ) {
-
-        cb(null, true);
-
-      } else {
-
-        cb(
-          new Error(
-            "Only supported video files are allowed."
-          )
-        );
-
-      }
-
-    }
-
-  });
-
-/*
-========================================================
-TEMPORARY SESSION STORAGE
-========================================================
-
-For testing.
-
-For permanent production deployment, store these
-sessions/tokens in Supabase/PostgreSQL/Redis.
-*/
-
-const sessions =
-  new Map();
-
-/*
-========================================================
-HELPERS
-========================================================
-*/
-
-function randomString(
-  length = 32
-) {
+function randomString(length = 32) {
 
   return crypto
     .randomBytes(length)
@@ -325,24 +190,6 @@ function randomString(
 
 }
 
-function sha256(value) {
-
-  return crypto
-    .createHash("sha256")
-    .update(value)
-    .digest();
-
-}
-
-function base64url(buffer) {
-
-  return buffer
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, "");
-
-}
 
 function createState() {
 
@@ -362,16 +209,15 @@ function createState() {
 
 }
 
-function verifyState(
-  signedState
-) {
 
-  if (!signedState) {
+function verifyState(state) {
+
+  if (!state) {
     return false;
   }
 
   const parts =
-    signedState.split(".");
+    state.split(".");
 
   if (parts.length !== 2) {
     return false;
@@ -406,11 +252,18 @@ function verifyState(
 
 }
 
-/*
-========================================================
-SESSION
-========================================================
-*/
+
+function escapeHTML(value) {
+
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+
+}
+
 
 function getSession(req) {
 
@@ -425,11 +278,8 @@ function getSession(req) {
 
 }
 
-function requireTikTok(
-  req,
-  res,
-  next
-) {
+
+function requireTikTok(req, res, next) {
 
   const session =
     getSession(req);
@@ -441,26 +291,21 @@ function requireTikTok(
   ) {
 
     return res.status(401).json({
-
-      error:
-        "TikTok account is not connected."
-
+      error: "TikTok account is not connected."
     });
 
   }
 
-  req.session =
-    session;
+  req.session = session;
 
   next();
 
 }
 
-/*
-========================================================
-TIKTOK API REQUEST
-========================================================
-*/
+
+/* =========================================================
+   TIKTOK API HELPER
+========================================================= */
 
 async function tiktokAPI(
   endpoint,
@@ -539,76 +384,1199 @@ async function tiktokAPI(
 
 }
 
-/*
-========================================================
-HOME
-========================================================
-*/
 
-app.get(
-  "/",
-  (req, res) => {
+/* =========================================================
+   TOKEN REFRESH
+========================================================= */
 
-    const index =
-      path.join(
-        PUBLIC_DIR,
-        "index.html"
-      );
+async function refreshToken(session) {
 
-    if (
-      fs.existsSync(index)
-    ) {
+  if (
+    !session.tiktok?.refresh_token
+  ) {
 
-      return res.sendFile(
-        index
-      );
-
-    }
-
-    res.send(`
-      <h1>Jontez TikTok Hub</h1>
-      <p>public/index.html is missing.</p>
-    `);
+    throw new Error(
+      "No refresh token available."
+    );
 
   }
-);
 
-/*
-========================================================
-HEALTH
-========================================================
-*/
+  const body =
+    new URLSearchParams({
 
-app.get(
-  "/health",
-  (req, res) => {
+      client_key:
+        CLIENT_KEY,
 
-    res.json({
+      client_secret:
+        CLIENT_SECRET,
 
-      status: "online",
+      grant_type:
+        "refresh_token",
 
-      service:
-        "Jontez TikTok Creator Hub",
-
-      timestamp:
-        new Date().toISOString(),
-
-      tiktokConfigured:
-        Boolean(
-          CLIENT_KEY &&
-          CLIENT_SECRET
-        )
+      refresh_token:
+        session.tiktok.refresh_token
 
     });
 
+  const response =
+    await fetch(
+      "https://open.tiktokapis.com/v2/oauth/token/",
+      {
+
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/x-www-form-urlencoded"
+        },
+
+        body
+
+      }
+    );
+
+  const data =
+    await response.json();
+
+  if (!response.ok) {
+
+    throw new Error(
+      data.error_description ||
+      data.error ||
+      "Token refresh failed."
+    );
+
   }
+
+  session.tiktok.access_token =
+    data.access_token;
+
+  if (data.refresh_token) {
+
+    session.tiktok.refresh_token =
+      data.refresh_token;
+
+  }
+
+  session.tiktok.expires_at =
+    Date.now() +
+    Number(
+      data.expires_in || 86400
+    ) * 1000;
+
+  return session.tiktok.access_token;
+
+}
+
+
+async function getToken(session) {
+
+  const expiresAt =
+    Number(
+      session.tiktok?.expires_at || 0
+    );
+
+  if (
+    expiresAt &&
+    Date.now() >
+      expiresAt - 5 * 60 * 1000
+  ) {
+
+    return refreshToken(session);
+
+  }
+
+  return session.tiktok.access_token;
+
+}
+
+
+/* =========================================================
+   INLINE HTML
+========================================================= */
+
+function pageTemplate(
+  title,
+  content
+) {
+
+  return `<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1.0"
+>
+
+<meta
+  name="description"
+  content="Jontez TikTok Creator Hub"
+>
+
+<meta
+  name="google-adsense-account"
+  content="ca-pub-4200131324754790"
+>
+
+<title>${escapeHTML(title)}</title>
+
+<style>
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+  background:
+    #0f0f0f;
+  color:
+    #ffffff;
+}
+
+nav {
+  position:
+    sticky;
+  top:
+    0;
+  z-index:
+    100;
+  background:
+    rgba(15,15,15,.96);
+  border-bottom:
+    1px solid #292929;
+  padding:
+    15px 5%;
+  display:
+    flex;
+  justify-content:
+    space-between;
+  align-items:
+    center;
+}
+
+.logo {
+  font-size:
+    22px;
+  font-weight:
+    800;
+}
+
+.logo span {
+  color:
+    #ff0050;
+}
+
+.nav-links {
+  display:
+    flex;
+  gap:
+    15px;
+  flex-wrap:
+    wrap;
+}
+
+.nav-links a {
+  color:
+    #ddd;
+  text-decoration:
+    none;
+  font-size:
+    14px;
+}
+
+.nav-links a:hover {
+  color:
+    #25f4ee;
+}
+
+.container {
+  width:
+    min(1100px, 92%);
+  margin:
+    auto;
+}
+
+.hero {
+  min-height:
+    70vh;
+  display:
+    flex;
+  align-items:
+    center;
+  justify-content:
+    center;
+  text-align:
+    center;
+  padding:
+    60px 20px;
+}
+
+.hero h1 {
+  font-size:
+    clamp(40px, 8vw, 78px);
+  margin:
+    0 0 20px;
+}
+
+.hero h1 span {
+  color:
+    #ff0050;
+}
+
+.hero p {
+  max-width:
+    700px;
+  margin:
+    auto;
+  color:
+    #bdbdbd;
+  font-size:
+    18px;
+  line-height:
+    1.7;
+}
+
+.buttons {
+  display:
+    flex;
+  gap:
+    12px;
+  justify-content:
+    center;
+  flex-wrap:
+    wrap;
+  margin-top:
+    30px;
+}
+
+.btn {
+  display:
+    inline-block;
+  border:
+    none;
+  border-radius:
+    999px;
+  padding:
+    14px 24px;
+  cursor:
+    pointer;
+  text-decoration:
+    none;
+  font-weight:
+    700;
+  font-size:
+    15px;
+}
+
+.btn-primary {
+  background:
+    #ff0050;
+  color:
+    white;
+}
+
+.btn-secondary {
+  background:
+    #25f4ee;
+  color:
+    #000;
+}
+
+.btn-dark {
+  background:
+    #272727;
+  color:
+    white;
+}
+
+.section {
+  padding:
+    60px 0;
+}
+
+.section h2 {
+  font-size:
+    34px;
+  margin-bottom:
+    15px;
+}
+
+.grid {
+  display:
+    grid;
+  grid-template-columns:
+    repeat(auto-fit, minmax(220px, 1fr));
+  gap:
+    18px;
+}
+
+.card {
+  background:
+    #181818;
+  border:
+    1px solid #292929;
+  border-radius:
+    18px;
+  padding:
+    24px;
+}
+
+.card h3 {
+  margin-top:
+    0;
+}
+
+.card p {
+  color:
+    #aaa;
+  line-height:
+    1.6;
+}
+
+.status {
+  padding:
+    15px;
+  border-radius:
+    12px;
+  background:
+    #202020;
+  margin:
+    15px 0;
+}
+
+.success {
+  color:
+    #25f4ee;
+}
+
+.danger {
+  color:
+    #ff4d6d;
+}
+
+.form {
+  max-width:
+    700px;
+  margin:
+    30px auto;
+}
+
+input,
+textarea,
+select {
+  width:
+    100%;
+  padding:
+    14px;
+  margin:
+    8px 0 15px;
+  background:
+    #111;
+  border:
+    1px solid #333;
+  border-radius:
+    10px;
+  color:
+    white;
+}
+
+textarea {
+  min-height:
+    130px;
+}
+
+footer {
+  border-top:
+    1px solid #292929;
+  margin-top:
+    50px;
+  padding:
+    30px 0;
+  text-align:
+    center;
+  color:
+    #888;
+}
+
+footer a {
+  color:
+    #25f4ee;
+  margin:
+    0 8px;
+}
+
+pre {
+  white-space:
+    pre-wrap;
+  word-break:
+    break-word;
+  background:
+    #090909;
+  padding:
+    15px;
+  border-radius:
+    10px;
+  overflow:
+    auto;
+}
+
+.hidden {
+  display:
+    none;
+}
+
+video {
+  width:
+    100%;
+  max-width:
+    700px;
+  border-radius:
+    15px;
+}
+
+@media(max-width:700px) {
+
+  nav {
+    align-items:
+      flex-start;
+    flex-direction:
+      column;
+    gap:
+      12px;
+  }
+
+  .hero {
+    min-height:
+      60vh;
+  }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+
+<div class="logo">
+Jontez <span>TikTok Hub</span>
+</div>
+
+<div class="nav-links">
+
+<a href="/">Home</a>
+
+<a href="/privacy">
+Privacy
+</a>
+
+<a href="/terms">
+Terms
+</a>
+
+<a href="/api/tiktok/config">
+API Config
+</a>
+
+</div>
+
+</nav>
+
+${content}
+
+<footer>
+
+<div>
+© ${new Date().getFullYear()}
+Jontez TikTok Creator Hub
+</div>
+
+<div style="margin-top:12px">
+
+<a href="/privacy">
+Privacy Policy
+</a>
+
+<a href="/terms">
+Terms of Service
+</a>
+
+</div>
+
+</footer>
+
+<script>
+
+async function api(url, options = {}) {
+
+  const response =
+    await fetch(url, options);
+
+  const data =
+    await response.json()
+      .catch(() => ({
+        error: "Invalid server response"
+      }));
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ||
+      "Request failed"
+    );
+  }
+
+  return data;
+}
+
+
+async function checkSession() {
+
+  try {
+
+    const data =
+      await api(
+        "/api/tiktok/session"
+      );
+
+    const status =
+      document.getElementById(
+        "connection-status"
+      );
+
+    if (!status) return;
+
+    if (data.connected) {
+
+      status.innerHTML =
+        '<span class="success">● TikTok Connected</span>';
+
+      const login =
+        document.getElementById(
+          "login-button"
+        );
+
+      if (login) {
+        login.classList.add("hidden");
+      }
+
+      const logout =
+        document.getElementById(
+          "logout-button"
+        );
+
+      if (logout) {
+        logout.classList.remove("hidden");
+      }
+
+    } else {
+
+      status.innerHTML =
+        '<span class="danger">● TikTok Not Connected</span>';
+
+    }
+
+  } catch (error) {
+
+    console.error(error);
+
+  }
+
+}
+
+
+async function logoutTikTok() {
+
+  try {
+
+    await api(
+      "/api/logout",
+      {
+        method: "POST"
+      }
+    );
+
+    window.location.reload();
+
+  } catch (error) {
+
+    alert(error.message);
+
+  }
+
+}
+
+
+async function loadProfile() {
+
+  const output =
+    document.getElementById(
+      "profile-output"
+    );
+
+  if (!output) return;
+
+  output.textContent =
+    "Loading...";
+
+  try {
+
+    const data =
+      await api(
+        "/api/tiktok/user"
+      );
+
+    output.textContent =
+      JSON.stringify(
+        data,
+        null,
+        2
+      );
+
+  } catch (error) {
+
+    output.textContent =
+      error.message;
+
+  }
+
+}
+
+
+async function loadVideos() {
+
+  const output =
+    document.getElementById(
+      "videos-output"
+    );
+
+  if (!output) return;
+
+  output.textContent =
+    "Loading...";
+
+  try {
+
+    const data =
+      await api(
+        "/api/tiktok/video/list",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+          body:
+            JSON.stringify({
+              max_count: 20
+            })
+        }
+      );
+
+    output.textContent =
+      JSON.stringify(
+        data,
+        null,
+        2
+      );
+
+  } catch (error) {
+
+    output.textContent =
+      error.message;
+
+  }
+
+}
+
+
+document.addEventListener(
+  "DOMContentLoaded",
+  checkSession
 );
 
-/*
-========================================================
-PRODUCTS + SCOPES
-========================================================
-*/
+</script>
+
+</body>
+
+</html>`;
+
+}
+
+
+/* =========================================================
+   HOME PAGE
+========================================================= */
+
+app.get("/", (req, res) => {
+
+  const content = `
+
+<section class="hero">
+
+<div class="container">
+
+<h1>
+Jontez
+<span>TikTok Hub</span>
+</h1>
+
+<p>
+A creator dashboard for connecting your TikTok
+account, viewing profile information, viewing videos,
+and working with approved TikTok APIs.
+</p>
+
+<div id="connection-status"
+     class="status">
+Checking TikTok connection...
+</div>
+
+<div class="buttons">
+
+<a
+  id="login-button"
+  class="btn btn-primary"
+  href="/auth/tiktok"
+>
+Continue with TikTok
+</a>
+
+<button
+  id="logout-button"
+  class="btn btn-dark hidden"
+  onclick="logoutTikTok()"
+>
+Logout
+</button>
+
+</div>
+
+</div>
+
+</section>
+
+
+<section class="section">
+
+<div class="container">
+
+<h2>Creator Dashboard</h2>
+
+<div class="grid">
+
+<div class="card">
+
+<h3>Connect TikTok</h3>
+
+<p>
+Secure OAuth login using TikTok Login Kit.
+</p>
+
+<a
+  class="btn btn-primary"
+  href="/auth/tiktok"
+>
+Connect
+</a>
+
+</div>
+
+
+<div class="card">
+
+<h3>Profile</h3>
+
+<p>
+Retrieve profile information from the
+authorized TikTok account.
+</p>
+
+<button
+  class="btn btn-secondary"
+  onclick="loadProfile()"
+>
+Load Profile
+</button>
+
+</div>
+
+
+<div class="card">
+
+<h3>Videos</h3>
+
+<p>
+Retrieve videos available through the
+authorized Display API scopes.
+</p>
+
+<button
+  class="btn btn-secondary"
+  onclick="loadVideos()"
+>
+Load Videos
+</button>
+
+</div>
+
+
+<div class="card">
+
+<h3>Developer API</h3>
+
+<p>
+View the configured products, redirect URI
+and requested OAuth scopes.
+</p>
+
+<a
+  class="btn btn-dark"
+  href="/api/tiktok/products"
+>
+View API
+</a>
+
+</div>
+
+</div>
+
+
+<div class="card" style="margin-top:25px">
+
+<h3>Profile Response</h3>
+
+<pre id="profile-output">
+Connect TikTok first.
+</pre>
+
+</div>
+
+
+<div class="card" style="margin-top:25px">
+
+<h3>Video Response</h3>
+
+<pre id="videos-output">
+Connect TikTok first.
+</pre>
+
+</div>
+
+</div>
+
+</section>
+
+`;
+
+  res.send(
+    pageTemplate(
+      "Jontez TikTok Creator Hub",
+      content
+    )
+  );
+
+});
+
+
+/* =========================================================
+   PRIVACY POLICY
+========================================================= */
+
+app.get("/privacy", (req, res) => {
+
+  const content = `
+
+<section class="section">
+
+<div class="container">
+
+<div class="card">
+
+<h1>Privacy Policy</h1>
+
+<p>
+Last updated: September 20, 2026
+</p>
+
+<h2>1. Introduction</h2>
+
+<p>
+Jontez TikTok Creator Hub is a web application
+designed to provide creator-related functionality
+using TikTok's developer services.
+</p>
+
+<h2>2. Information We Process</h2>
+
+<p>
+When you authorize the application, TikTok may
+provide information permitted by the scopes that
+you approve.
+</p>
+
+<p>
+Depending on the approved scopes, this may include
+basic profile information and information about
+TikTok videos.
+</p>
+
+<h2>3. TikTok Authorization</h2>
+
+<p>
+The application uses TikTok's OAuth authorization
+process. You are redirected to TikTok to authenticate
+and authorize the requested permissions.
+</p>
+
+<h2>4. Access Tokens</h2>
+
+<p>
+Access and refresh tokens are handled by the server
+and are not intentionally displayed as part of the
+public webpage.
+</p>
+
+<h2>5. Data Sharing</h2>
+
+<p>
+We do not intentionally sell personal information.
+Information obtained through TikTok APIs is used
+for the functionality of the application.
+</p>
+
+<h2>6. Data Retention</h2>
+
+<p>
+Temporary application sessions may be removed when
+the server restarts. Production deployments may use
+persistent storage where required.
+</p>
+
+<h2>7. Third-Party Services</h2>
+
+<p>
+This application uses TikTok developer services.
+TikTok's own privacy practices also apply to
+information processed by TikTok.
+</p>
+
+<h2>8. Revoking Access</h2>
+
+<p>
+You may revoke the application's access through
+the relevant TikTok account settings.
+</p>
+
+<h2>9. Security</h2>
+
+<p>
+Reasonable technical measures are used to protect
+application credentials and authorization data.
+No internet service can guarantee absolute security.
+</p>
+
+<h2>10. Contact</h2>
+
+<p>
+For privacy questions, contact the administrator
+through the contact information associated with
+the application.
+</p>
+
+</div>
+
+</div>
+
+</section>
+
+`;
+
+  res.send(
+    pageTemplate(
+      "Privacy Policy - Jontez TikTok Hub",
+      content
+    )
+  );
+
+});
+
+
+/* =========================================================
+   TERMS OF SERVICE
+========================================================= */
+
+app.get("/terms", (req, res) => {
+
+  const content = `
+
+<section class="section">
+
+<div class="container">
+
+<div class="card">
+
+<h1>Terms of Service</h1>
+
+<p>
+Last updated: September 20, 2026
+</p>
+
+<h2>1. Acceptance</h2>
+
+<p>
+By using Jontez TikTok Creator Hub, you agree
+to these Terms of Service.
+</p>
+
+<h2>2. Service</h2>
+
+<p>
+The service provides creator-related functionality
+through TikTok developer APIs and other application
+features.
+</p>
+
+<h2>3. TikTok Account</h2>
+
+<p>
+You are responsible for maintaining the security
+of your TikTok account and for authorizing only
+applications you trust.
+</p>
+
+<h2>4. Authorization</h2>
+
+<p>
+You may be redirected to TikTok to authenticate
+and grant permissions. You can decline requested
+permissions.
+</p>
+
+<h2>5. Acceptable Use</h2>
+
+<p>
+You agree not to use the service for unlawful,
+fraudulent, abusive, or unauthorized activities.
+</p>
+
+<h2>6. TikTok Rules</h2>
+
+<p>
+Use of TikTok functionality remains subject to
+TikTok's applicable terms, policies, developer
+requirements and API restrictions.
+</p>
+
+<h2>7. Availability</h2>
+
+<p>
+The service may be modified, interrupted or
+temporarily unavailable.
+</p>
+
+<h2>8. No Guarantee</h2>
+
+<p>
+The service is provided without a guarantee that
+all TikTok functionality will always be available.
+API access can depend on TikTok approval,
+permissions and platform changes.
+</p>
+
+<h2>9. Termination</h2>
+
+<p>
+Access to the service may be suspended or terminated
+if these terms are violated or if required for
+security or operational reasons.
+</p>
+
+<h2>10. Changes</h2>
+
+<p>
+These terms may be updated from time to time.
+The updated version will be published on this page.
+</p>
+
+<h2>11. Contact</h2>
+
+<p>
+For questions regarding these terms, contact the
+administrator through the contact information
+associated with this application.
+</p>
+
+</div>
+
+</div>
+
+</section>
+
+`;
+
+  res.send(
+    pageTemplate(
+      "Terms of Service - Jontez TikTok Hub",
+      content
+    )
+  );
+
+});
+
+
+/* =========================================================
+   HEALTH
+========================================================= */
+
+app.get("/health", (req, res) => {
+
+  res.json({
+
+    status:
+      "online",
+
+    service:
+      "Jontez TikTok Creator Hub",
+
+    timestamp:
+      new Date().toISOString(),
+
+    tiktokConfigured:
+      Boolean(
+        CLIENT_KEY &&
+        CLIENT_SECRET
+      ),
+
+    redirect_uri:
+      REDIRECT_URI,
+
+    scopes:
+      REQUESTED_SCOPES
+
+  });
+
+});
+
+
+/* =========================================================
+   PRODUCTS
+========================================================= */
 
 app.get(
   "/api/tiktok/products",
@@ -625,19 +1593,21 @@ app.get(
       requested_scopes:
         REQUESTED_SCOPES,
 
+      redirect_uri:
+        REDIRECT_URI,
+
       note:
-        "Availability and approval are controlled by TikTok."
+        "Actual product and scope availability depends on TikTok configuration and approval."
 
     });
 
   }
 );
 
-/*
-========================================================
-OAUTH CONFIG
-========================================================
-*/
+
+/* =========================================================
+   CONFIG
+========================================================= */
 
 app.get(
   "/api/tiktok/config",
@@ -646,9 +1616,7 @@ app.get(
     res.json({
 
       client_configured:
-        Boolean(
-          CLIENT_KEY
-        ),
+        Boolean(CLIENT_KEY),
 
       redirect_uri:
         REDIRECT_URI,
@@ -664,32 +1632,37 @@ app.get(
   }
 );
 
-/*
-========================================================
-TIKTOK LOGIN
-========================================================
-*/
+
+/* =========================================================
+   TIKTOK LOGIN
+========================================================= */
 
 app.get(
   "/auth/tiktok",
   (req, res) => {
 
-    if (
-      !CLIENT_KEY ||
-      !CLIENT_SECRET
-    ) {
+    if (!CLIENT_KEY) {
 
       return res.status(500).send(
-        "TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET are required."
+        pageTemplate(
+          "TikTok Configuration Error",
+          `
+          <section class="section">
+          <div class="container">
+          <div class="card">
+          <h1>Configuration Error</h1>
+          <p>
+          TIKTOK_CLIENT_KEY is missing from the
+          Render environment variables.
+          </p>
+          </div>
+          </div>
+          </section>
+          `
+        )
       );
 
     }
-
-    /*
-    -----------------------------------------------
-    STATE
-    -----------------------------------------------
-    */
 
     const state =
       createState();
@@ -700,51 +1673,12 @@ app.get(
       {
         httpOnly: true,
         secure:
-          BASE_URL.startsWith(
-            "https://"
-          ),
+          BASE_URL.startsWith("https://"),
         sameSite: "lax",
         maxAge:
           10 * 60 * 1000
       }
     );
-
-    /*
-    -----------------------------------------------
-    PKCE
-    -----------------------------------------------
-    */
-
-    const codeVerifier =
-      base64url(
-        crypto.randomBytes(32)
-      );
-
-    const codeChallenge =
-      base64url(
-        sha256(codeVerifier)
-      );
-
-    res.cookie(
-      "tiktok_code_verifier",
-      codeVerifier,
-      {
-        httpOnly: true,
-        secure:
-          BASE_URL.startsWith(
-            "https://"
-          ),
-        sameSite: "lax",
-        maxAge:
-          10 * 60 * 1000
-      }
-    );
-
-    /*
-    -----------------------------------------------
-    AUTHORIZATION URL
-    -----------------------------------------------
-    */
 
     const params =
       new URLSearchParams({
@@ -761,31 +1695,22 @@ app.get(
         redirect_uri:
           REDIRECT_URI,
 
-        state,
-
-        code_challenge:
-          codeChallenge,
-
-        code_challenge_method:
-          "S256"
+        state
 
       });
 
     const url =
       `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`;
 
-    res.redirect(
-      url
-    );
+    res.redirect(url);
 
   }
 );
 
-/*
-========================================================
-OAUTH CALLBACK
-========================================================
-*/
+
+/* =========================================================
+   OAUTH CALLBACK
+========================================================= */
 
 app.get(
   "/auth/tiktok/callback",
@@ -822,7 +1747,9 @@ app.get(
 
       if (
         !storedState ||
-        storedState !== state
+        !state ||
+        storedState !== state ||
+        !verifyState(state)
       ) {
 
         throw new Error(
@@ -830,16 +1757,6 @@ app.get(
         );
 
       }
-
-      const codeVerifier =
-        req.cookies
-          .tiktok_code_verifier;
-
-      /*
-      -----------------------------------------------
-      TOKEN EXCHANGE
-      -----------------------------------------------
-      */
 
       const body =
         new URLSearchParams({
@@ -860,29 +1777,19 @@ app.get(
 
         });
 
-      /*
-      PKCE verifier
-      */
-
-      if (codeVerifier) {
-
-        body.set(
-          "code_verifier",
-          codeVerifier
-        );
-
-      }
-
       const response =
         await fetch(
           "https://open.tiktokapis.com/v2/oauth/token/",
           {
 
-            method: "POST",
+            method:
+              "POST",
 
             headers: {
+
               "Content-Type":
                 "application/x-www-form-urlencoded"
+
             },
 
             body
@@ -902,12 +1809,6 @@ app.get(
         );
 
       }
-
-      /*
-      -----------------------------------------------
-      APPLICATION SESSION
-      -----------------------------------------------
-      */
 
       const sessionId =
         randomString(32);
@@ -938,16 +1839,14 @@ app.get(
               Number(
                 token.expires_in ||
                 86400
-              ) *
-              1000,
+              ) * 1000,
 
             refresh_expires_at:
               Date.now() +
               Number(
                 token.refresh_expires_in ||
                 31536000
-              ) *
-              1000
+              ) * 1000
 
           }
 
@@ -958,27 +1857,28 @@ app.get(
         "jontez_session",
         sessionId,
         {
-          httpOnly: true,
+
+          httpOnly:
+            true,
+
           secure:
-            BASE_URL.startsWith(
-              "https://"
-            ),
-          sameSite: "lax",
+            BASE_URL.startsWith("https://"),
+
+          sameSite:
+            "lax",
+
           maxAge:
             7 *
             24 *
             60 *
             60 *
             1000
+
         }
       );
 
       res.clearCookie(
         "tiktok_state"
-      );
-
-      res.clearCookie(
-        "tiktok_code_verifier"
       );
 
       res.redirect(
@@ -992,24 +1892,47 @@ app.get(
         error
       );
 
-      res.status(400).send(`
-        <h1>TikTok connection failed</h1>
-        <p>${escapeHTML(
-          error.message
-        )}</p>
-        <a href="/">Return to Jontez Creator Hub</a>
-      `);
+      res.status(400).send(
+        pageTemplate(
+          "TikTok Connection Failed",
+          `
+          <section class="section">
+
+          <div class="container">
+
+          <div class="card">
+
+          <h1>TikTok Connection Failed</h1>
+
+          <p class="danger">
+          ${escapeHTML(error.message)}
+          </p>
+
+          <a
+            class="btn btn-primary"
+            href="/"
+          >
+            Return Home
+          </a>
+
+          </div>
+
+          </div>
+
+          </section>
+          `
+        )
+      );
 
     }
 
   }
 );
 
-/*
-========================================================
-CURRENT SESSION
-========================================================
-*/
+
+/* =========================================================
+   SESSION
+========================================================= */
 
 app.get(
   "/api/tiktok/session",
@@ -1050,139 +1973,10 @@ app.get(
   }
 );
 
-/*
-========================================================
-REFRESH TOKEN
-========================================================
-*/
 
-async function refreshToken(
-  session
-) {
-
-  if (
-    !session.tiktok?.refresh_token
-  ) {
-
-    throw new Error(
-      "No refresh token available."
-    );
-
-  }
-
-  const body =
-    new URLSearchParams({
-
-      client_key:
-        CLIENT_KEY,
-
-      client_secret:
-        CLIENT_SECRET,
-
-      grant_type:
-        "refresh_token",
-
-      refresh_token:
-        session.tiktok
-          .refresh_token
-
-    });
-
-  const response =
-    await fetch(
-      "https://open.tiktokapis.com/v2/oauth/token/",
-      {
-
-        method: "POST",
-
-        headers: {
-          "Content-Type":
-            "application/x-www-form-urlencoded"
-        },
-
-        body
-
-      }
-    );
-
-  const data =
-    await response.json();
-
-  if (!response.ok) {
-
-    throw new Error(
-      data.error_description ||
-      data.error ||
-      "Token refresh failed."
-    );
-
-  }
-
-  session.tiktok.access_token =
-    data.access_token;
-
-  if (
-    data.refresh_token
-  ) {
-
-    session.tiktok.refresh_token =
-      data.refresh_token;
-
-  }
-
-  session.tiktok.expires_at =
-    Date.now() +
-    Number(
-      data.expires_in ||
-      86400
-    ) *
-    1000;
-
-  return session.tiktok
-    .access_token;
-
-}
-
-/*
-========================================================
-GET VALID TOKEN
-========================================================
-*/
-
-async function getToken(
-  session
-) {
-
-  const expiresAt =
-    Number(
-      session.tiktok
-        ?.expires_at ||
-      0
-    );
-
-  if (
-    expiresAt &&
-    Date.now() >
-      expiresAt -
-      5 * 60 * 1000
-  ) {
-
-    return refreshToken(
-      session
-    );
-
-  }
-
-  return session.tiktok
-    .access_token;
-
-}
-
-/*
-========================================================
-USER PROFILE
-========================================================
-*/
+/* =========================================================
+   USER PROFILE
+========================================================= */
 
 app.get(
   "/api/tiktok/user",
@@ -1196,19 +1990,17 @@ app.get(
           req.session
         );
 
+      /*
+       Only request basic fields by default.
+       Additional fields require the corresponding
+       approved scopes.
+      */
+
       const fields = [
         "open_id",
         "union_id",
         "avatar_url",
-        "display_name",
-        "profile_deep_link",
-        "bio_description",
-        "is_verified",
-        "username",
-        "follower_count",
-        "following_count",
-        "likes_count",
-        "video_count"
+        "display_name"
       ];
 
       const data =
@@ -1241,11 +2033,10 @@ app.get(
   }
 );
 
-/*
-========================================================
-VIDEO LIST
-========================================================
-*/
+
+/* =========================================================
+   VIDEO LIST
+========================================================= */
 
 app.post(
   "/api/tiktok/video/list",
@@ -1264,17 +2055,14 @@ app.post(
         max_count:
           Math.min(
             Number(
-              req.body.max_count ||
-              20
+              req.body.max_count || 20
             ),
             20
           )
 
       };
 
-      if (
-        req.body.cursor
-      ) {
+      if (req.body.cursor) {
 
         body.cursor =
           Number(
@@ -1288,12 +2076,11 @@ app.post(
           "/v2/video/list/",
           {
 
-            method: "POST",
+            method:
+              "POST",
 
             body:
-              JSON.stringify(
-                body
-              )
+              JSON.stringify(body)
 
           },
           token
@@ -1320,11 +2107,10 @@ app.post(
   }
 );
 
-/*
-========================================================
-VIDEO QUERY
-========================================================
-*/
+
+/* =========================================================
+   VIDEO QUERY
+========================================================= */
 
 app.post(
   "/api/tiktok/video/query",
@@ -1332,11 +2118,6 @@ app.post(
   async (req, res) => {
 
     try {
-
-      const token =
-        await getToken(
-          req.session
-        );
 
       const ids =
         Array.isArray(
@@ -1348,20 +2129,24 @@ app.post(
       if (!ids.length) {
 
         return res.status(400).json({
-
           error:
             "video_ids is required."
-
         });
 
       }
+
+      const token =
+        await getToken(
+          req.session
+        );
 
       const data =
         await tiktokAPI(
           "/v2/video/query/",
           {
 
-            method: "POST",
+            method:
+              "POST",
 
             body:
               JSON.stringify({
@@ -1398,11 +2183,10 @@ app.post(
   }
 );
 
-/*
-========================================================
-CONTENT POSTING - CREATOR INFO
-========================================================
-*/
+
+/* =========================================================
+   CREATOR INFO
+========================================================= */
 
 app.post(
   "/api/tiktok/creator-info",
@@ -1446,11 +2230,10 @@ app.post(
   }
 );
 
-/*
-========================================================
-DIRECT POST FROM URL
-========================================================
-*/
+
+/* =========================================================
+   DIRECT POST FROM VERIFIED URL
+========================================================= */
 
 app.post(
   "/api/tiktok/post/url",
@@ -1471,10 +2254,8 @@ app.post(
       if (!video_url) {
 
         return res.status(400).json({
-
           error:
             "video_url is required."
-
         });
 
       }
@@ -1482,10 +2263,8 @@ app.post(
       if (!privacy_level) {
 
         return res.status(400).json({
-
           error:
             "privacy_level is required."
-
         });
 
       }
@@ -1500,7 +2279,8 @@ app.post(
           "/v2/post/publish/video/init/",
           {
 
-            method: "POST",
+            method:
+              "POST",
 
             body:
               JSON.stringify({
@@ -1564,11 +2344,10 @@ app.post(
   }
 );
 
-/*
-========================================================
-DRAFT / UPLOAD INITIALIZATION
-========================================================
-*/
+
+/* =========================================================
+   VIDEO UPLOAD INITIALIZATION
+========================================================= */
 
 app.post(
   "/api/tiktok/upload/init",
@@ -1576,11 +2355,6 @@ app.post(
   async (req, res) => {
 
     try {
-
-      const token =
-        await getToken(
-          req.session
-        );
 
       const {
         video_size,
@@ -1591,20 +2365,24 @@ app.post(
       if (!video_size) {
 
         return res.status(400).json({
-
           error:
             "video_size is required."
-
         });
 
       }
+
+      const token =
+        await getToken(
+          req.session
+        );
 
       const data =
         await tiktokAPI(
           "/v2/post/publish/inbox/video/init/",
           {
 
-            method: "POST",
+            method:
+              "POST",
 
             body:
               JSON.stringify({
@@ -1660,11 +2438,10 @@ app.post(
   }
 );
 
-/*
-========================================================
-PUBLISH STATUS
-========================================================
-*/
+
+/* =========================================================
+   PUBLISH STATUS
+========================================================= */
 
 app.post(
   "/api/tiktok/publish/status",
@@ -1673,28 +2450,27 @@ app.post(
 
     try {
 
+      if (!req.body.publish_id) {
+
+        return res.status(400).json({
+          error:
+            "publish_id is required."
+        });
+
+      }
+
       const token =
         await getToken(
           req.session
         );
-
-      if (!req.body.publish_id) {
-
-        return res.status(400).json({
-
-          error:
-            "publish_id is required."
-
-        });
-
-      }
 
       const data =
         await tiktokAPI(
           "/v2/post/publish/status/fetch/",
           {
 
-            method: "POST",
+            method:
+              "POST",
 
             body:
               JSON.stringify({
@@ -1729,124 +2505,10 @@ app.post(
   }
 );
 
-/*
-========================================================
-LOCAL MEDIA UPLOAD
-========================================================
-*/
 
-app.post(
-  "/api/upload",
-  upload.single("video"),
-  (req, res) => {
-
-    if (!req.file) {
-
-      return res.status(400).json({
-
-        error:
-          "No video uploaded."
-
-      });
-
-    }
-
-    res.json({
-
-      success: true,
-
-      file: {
-
-        filename:
-          req.file.filename,
-
-        size:
-          req.file.size,
-
-        type:
-          req.file.mimetype,
-
-        url:
-          `${BASE_URL}/uploads/${req.file.filename}`
-
-      }
-
-    });
-
-  }
-);
-
-/*
-========================================================
-DATA PORTABILITY ROUTES
-========================================================
-
-These routes provide a generic API gateway structure.
-Actual portability access requires the relevant
-Data Portability API approval/scopes.
-========================================================
-*/
-
-app.post(
-  "/api/tiktok/portability/request",
-  requireTikTok,
-  async (req, res) => {
-
-    try {
-
-      const token =
-        await getToken(
-          req.session
-        );
-
-      /*
-      The exact portability request payload should be
-      constructed according to the approved portability
-      data categories and current TikTok endpoint docs.
-      */
-
-      const response =
-        await tiktokAPI(
-          "/v2/data/portability/create/",
-          {
-
-            method: "POST",
-
-            body:
-              JSON.stringify(
-                req.body || {}
-              )
-
-          },
-          token
-        );
-
-      res.json(response);
-
-    } catch (error) {
-
-      res.status(
-        error.status || 500
-      ).json({
-
-        error:
-          error.message,
-
-        details:
-          error.data || null
-
-      });
-
-    }
-
-  }
-);
-
-/*
-========================================================
-LOGOUT
-========================================================
-*/
+/* =========================================================
+   LOGOUT
+========================================================= */
 
 app.post(
   "/api/logout",
@@ -1857,9 +2519,7 @@ app.post(
 
     if (id) {
 
-      sessions.delete(
-        id
-      );
+      sessions.delete(id);
 
     }
 
@@ -1874,21 +2534,76 @@ app.post(
   }
 );
 
-/*
-========================================================
-ERROR HANDLER
-========================================================
-*/
+
+/* =========================================================
+   404
+========================================================= */
+
+app.use(
+  (req, res) => {
+
+    if (
+      req.path.startsWith("/api/")
+    ) {
+
+      return res.status(404).json({
+        error:
+          "API endpoint not found."
+      });
+
+    }
+
+    res.status(404).send(
+      pageTemplate(
+        "404 - Not Found",
+        `
+        <section class="section">
+
+        <div class="container">
+
+        <div class="card">
+
+        <h1>404</h1>
+
+        <p>
+        The page you requested was not found.
+        </p>
+
+        <a
+          class="btn btn-primary"
+          href="/"
+        >
+          Go Home
+        </a>
+
+        </div>
+
+        </div>
+
+        </section>
+        `
+      )
+    );
+
+  }
+);
+
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
 
 app.use(
   (error, req, res, next) => {
 
     console.error(
-      "ERROR:",
+      "SERVER ERROR:",
       error
     );
 
-    res.status(500).json({
+    res.status(
+      error.status || 500
+    ).json({
 
       error:
         error.message ||
@@ -1899,47 +2614,10 @@ app.use(
   }
 );
 
-/*
-========================================================
-HTML ESCAPE
-========================================================
-*/
 
-function escapeHTML(
-  value
-) {
-
-  return String(
-    value || ""
-  )
-    .replace(
-      /&/g,
-      "&amp;"
-    )
-    .replace(
-      /</g,
-      "&lt;"
-    )
-    .replace(
-      />/g,
-      "&gt;"
-    )
-    .replace(
-      /"/g,
-      "&quot;"
-    )
-    .replace(
-      /'/g,
-      "&#039;"
-    );
-
-}
-
-/*
-========================================================
-START SERVER
-========================================================
-*/
+/* =========================================================
+   START SERVER
+========================================================= */
 
 app.listen(
   PORT,
@@ -1947,7 +2625,7 @@ app.listen(
   () => {
 
     console.log(
-      "================================"
+      "=========================================="
     );
 
     console.log(
@@ -1955,7 +2633,7 @@ app.listen(
     );
 
     console.log(
-      "================================"
+      "=========================================="
     );
 
     console.log(
@@ -1971,13 +2649,10 @@ app.listen(
     );
 
     console.log(
-      "Products:"
-    );
-
-    console.log(
-      TIKTOK_PRODUCTS.join(
-        ", "
-      )
+      `TikTok configured: ${Boolean(
+        CLIENT_KEY &&
+        CLIENT_SECRET
+      )}`
     );
 
     console.log(
@@ -1985,9 +2660,11 @@ app.listen(
     );
 
     console.log(
-      REQUESTED_SCOPES.join(
-        ", "
-      )
+      REQUESTED_SCOPES.join(", ")
+    );
+
+    console.log(
+      "=========================================="
     );
 
   }
