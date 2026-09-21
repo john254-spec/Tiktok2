@@ -13,11 +13,33 @@ const PORT = process.env.PORT || 10000;
 const CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
 const CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET;
 
-const BASE_URL =
-  process.env.BASE_URL || "https://tiktok21.onrender.com";
+const BASE_URL = (
+  process.env.BASE_URL ||
+  "https://tiktok21.onrender.com"
+).replace(/\/+$/, "");
 
 const REDIRECT_URI =
   `${BASE_URL}/auth/tiktok/callback`;
+
+
+/* =========================================================
+   BASIC SESSION STORAGE
+   =========================================================
+
+   This stores sessions in server RAM.
+
+   IMPORTANT:
+   Render restarts can clear these sessions.
+   For production, use Redis/database storage.
+   ========================================================= */
+
+const sessions = new Map();
+
+const SESSION_MAX_AGE =
+  7 * 24 * 60 * 60 * 1000;
+
+const OAUTH_STATE_MAX_AGE =
+  10 * 60 * 1000;
 
 
 /* =========================================================
@@ -30,22 +52,33 @@ const TIKTOK_VERIFICATION_FILENAME =
 const TIKTOK_VERIFICATION_CONTENT =
   "tiktok-developers-site-verification=Yoxq0mIwsslltRqxMrlJeB2huPa7BJ8k";
 
-/*
-   IMPORTANT:
-   The filename below is EXACTLY:
-
-   tiktokYoxq0mIwsslltRqxMrlJeB2huPa7BJ8k.txt
-*/
-
 app.get(
   `/${TIKTOK_VERIFICATION_FILENAME}`,
   (req, res) => {
+
     res
       .status(200)
       .type("text/plain")
       .send(TIKTOK_VERIFICATION_CONTENT);
+
   }
 );
+
+
+/* =========================================================
+   HTML ESCAPE
+   ========================================================= */
+
+function escapeHTML(value) {
+
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+
+}
 
 
 /* =========================================================
@@ -53,9 +86,12 @@ app.get(
    ========================================================= */
 
 function page(title, content) {
+
   return `
 <!DOCTYPE html>
+
 <html lang="en">
+
 <head>
 
 <meta charset="UTF-8">
@@ -65,7 +101,7 @@ function page(title, content) {
   content="width=device-width, initial-scale=1.0"
 >
 
-<title>${title}</title>
+<title>${escapeHTML(title)}</title>
 
 <style>
 
@@ -75,7 +111,10 @@ function page(title, content) {
 
 body {
   margin: 0;
-  font-family: Arial, Helvetica, sans-serif;
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
   background: #f5f7fb;
   color: #222;
 }
@@ -103,7 +142,8 @@ nav a:hover {
   padding: 30px;
   background: white;
   border-radius: 14px;
-  box-shadow: 0 5px 25px rgba(0,0,0,0.08);
+  box-shadow:
+    0 5px 25px rgba(0,0,0,0.08);
 }
 
 .hero {
@@ -137,6 +177,10 @@ nav a:hover {
   opacity: 0.9;
 }
 
+.logout {
+  background: #dc2626;
+}
+
 h1,
 h2 {
   color: #111827;
@@ -154,19 +198,52 @@ footer {
 }
 
 .status {
-  padding: 12px;
+  padding: 14px;
   background: #ecfdf5;
   border-radius: 8px;
+  margin-top: 20px;
+  color: #065f46;
+}
+
+.error {
+  padding: 14px;
+  background: #fef2f2;
+  border-radius: 8px;
+  margin-top: 20px;
+  color: #991b1b;
+}
+
+.profile {
+  text-align: center;
+}
+
+.profile img {
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin: 15px;
+}
+
+.card {
+  background: #f9fafb;
+  padding: 20px;
+  border-radius: 10px;
   margin-top: 20px;
 }
 
 .code-box {
   background: #111827;
-  color: #fff;
+  color: white;
   padding: 15px;
   border-radius: 8px;
   overflow-x: auto;
   word-break: break-all;
+}
+
+.small {
+  color: #666;
+  font-size: 14px;
 }
 
 </style>
@@ -207,8 +284,69 @@ Jontez TikTok Hub
 </footer>
 
 </body>
+
 </html>
 `;
+
+}
+
+
+/* =========================================================
+   SESSION HELPERS
+   ========================================================= */
+
+function createSession(user) {
+
+  const sessionId =
+    crypto.randomBytes(32).toString("hex");
+
+  sessions.set(
+    sessionId,
+    {
+      user,
+      createdAt: Date.now(),
+      expiresAt:
+        Date.now() + SESSION_MAX_AGE
+    }
+  );
+
+  return sessionId;
+
+}
+
+
+function getSession(req) {
+
+  const sessionId =
+    req.cookies.tiktok_session;
+
+  if (!sessionId) {
+    return null;
+  }
+
+  const session =
+    sessions.get(sessionId);
+
+  if (!session) {
+    return null;
+  }
+
+  if (
+    Date.now() >
+    session.expiresAt
+  ) {
+
+    sessions.delete(sessionId);
+
+    return null;
+
+  }
+
+  return {
+    id: sessionId,
+    ...session
+  };
+
 }
 
 
@@ -217,6 +355,51 @@ Jontez TikTok Hub
    ========================================================= */
 
 app.get("/", (req, res) => {
+
+  const session =
+    getSession(req);
+
+  if (session) {
+
+    return res.send(
+      page(
+        "Jontez TikTok Hub",
+        `
+
+        <div class="hero">
+
+          <h1>
+            Welcome to Jontez TikTok Hub
+          </h1>
+
+          <p>
+            You are logged in with TikTok.
+          </p>
+
+          <a
+            class="button"
+            href="/dashboard"
+          >
+            Open Dashboard
+          </a>
+
+          <br>
+
+          <a
+            class="button logout"
+            href="/logout"
+          >
+            Logout
+          </a>
+
+        </div>
+
+        `
+      )
+    );
+
+  }
+
 
   res.send(
     page(
@@ -230,8 +413,8 @@ app.get("/", (req, res) => {
         </h1>
 
         <p>
-          A web application designed to connect with TikTok
-          through TikTok's official developer APIs and Login Kit.
+          Connect your TikTok account using
+          TikTok Login Kit.
         </p>
 
         <a
@@ -301,7 +484,7 @@ app.get("/privacy", (req, res) => {
       <p>
         Depending on the permissions approved for the application,
         this may include basic account information such as your
-        TikTok user identifier and profile information.
+        TikTok user identifier, display name and profile image.
       </p>
 
       <h2>
@@ -398,7 +581,7 @@ app.get("/privacy", (req, res) => {
 
 
 /* =========================================================
-   TERMS OF SERVICE
+   TERMS
    ========================================================= */
 
 app.get("/terms", (req, res) => {
@@ -420,9 +603,8 @@ app.get("/terms", (req, res) => {
       </p>
 
       <p>
-        These Terms of Service govern your use of Jontez TikTok Hub.
-        By accessing or using the application, you agree to comply
-        with these terms.
+        These Terms of Service govern your use of
+        Jontez TikTok Hub.
       </p>
 
       <h2>
@@ -440,9 +622,10 @@ app.get("/terms", (req, res) => {
       </h2>
 
       <p>
-        The application may use TikTok's official developer
-        services and APIs. Your use of TikTok remains subject to
-        TikTok's own terms, policies, and community guidelines.
+        The application uses TikTok's official developer
+        services and APIs.
+        Your use of TikTok remains subject to TikTok's own
+        terms, policies and community guidelines.
       </p>
 
       <h2>
@@ -451,8 +634,7 @@ app.get("/terms", (req, res) => {
 
       <p>
         You are responsible for maintaining the security of your
-        accounts and for activities performed through your
-        authorized account.
+        accounts and authorized sessions.
       </p>
 
       <h2>
@@ -472,8 +654,8 @@ app.get("/terms", (req, res) => {
 
       <p>
         We may modify, suspend, or discontinue parts of the
-        application when necessary for maintenance, security,
-        development, or other operational reasons.
+        application for maintenance, security, development,
+        or operational reasons.
       </p>
 
       <h2>
@@ -481,40 +663,16 @@ app.get("/terms", (req, res) => {
       </h2>
 
       <p>
-        The application may depend on third-party services,
-        including TikTok and hosting infrastructure. We are not
-        responsible for outages or changes made by third-party
-        providers.
+        The application depends on third-party services,
+        including TikTok and hosting infrastructure.
       </p>
 
       <h2>
-        Limitation of Liability
+        Changes
       </h2>
 
       <p>
-        To the extent permitted by applicable law, the application
-        is provided without guarantees that it will always be
-        available, error-free, or uninterrupted.
-      </p>
-
-      <h2>
-        Changes to These Terms
-      </h2>
-
-      <p>
-        These Terms may be updated from time to time. Continued
-        use of the application after an update constitutes
-        acceptance of the revised terms.
-      </p>
-
-      <h2>
-        Contact
-      </h2>
-
-      <p>
-        Questions concerning these Terms may be directed to the
-        operator of Jontez TikTok Hub through the contact
-        information associated with this application.
+        These Terms may be updated from time to time.
       </p>
 
       `
@@ -525,7 +683,7 @@ app.get("/terms", (req, res) => {
 
 
 /* =========================================================
-   HEALTH CHECK
+   HEALTH
    ========================================================= */
 
 app.get("/health", (req, res) => {
@@ -567,19 +725,20 @@ app.get("/health", (req, res) => {
 
 
 /* =========================================================
-   TIKTOK LOGIN
+   START TIKTOK AUTHORIZATION
    ========================================================= */
 
 app.get("/auth/tiktok", (req, res) => {
 
-  if (!CLIENT_KEY || !CLIENT_SECRET) {
+  if (
+    !CLIENT_KEY ||
+    !CLIENT_SECRET
+  ) {
 
     return res.status(500).send(
 
       page(
-
         "Configuration Error",
-
         `
 
         <h1>
@@ -587,12 +746,7 @@ app.get("/auth/tiktok", (req, res) => {
         </h1>
 
         <p>
-          TikTok credentials have not been configured
-          on the server.
-        </p>
-
-        <p>
-          Add the required environment variables in Render:
+          TikTok credentials are not configured.
         </p>
 
         <ul>
@@ -612,7 +766,6 @@ app.get("/auth/tiktok", (req, res) => {
         </ul>
 
         `
-
       )
 
     );
@@ -620,9 +773,18 @@ app.get("/auth/tiktok", (req, res) => {
   }
 
 
+  /* Generate secure OAuth state */
+
   const state =
     crypto.randomBytes(32).toString("hex");
 
+
+  /*
+    Store OAuth state in secure cookie.
+
+    SameSite=Lax works for a normal OAuth
+    top-level redirect back to the site.
+  */
 
   res.cookie(
     "tiktok_oauth_state",
@@ -636,7 +798,9 @@ app.get("/auth/tiktok", (req, res) => {
       sameSite: "lax",
 
       maxAge:
-        10 * 60 * 1000
+        OAUTH_STATE_MAX_AGE,
+
+      path: "/"
 
     }
   );
@@ -667,6 +831,16 @@ app.get("/auth/tiktok", (req, res) => {
     `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`;
 
 
+  console.log(
+    "Starting TikTok authorization"
+  );
+
+  console.log(
+    "Redirect URI:",
+    REDIRECT_URI
+  );
+
+
   res.redirect(
     authorizationURL
   );
@@ -688,43 +862,98 @@ app.get(
         code,
         state,
         error,
-        error_description
+        error_description,
+        log_id
       } = req.query;
 
 
-      /* TIKTOK RETURNED AN ERROR */
+      console.log(
+        "TikTok callback received"
+      );
+
+      console.log(
+        "Has code:",
+        Boolean(code)
+      );
+
+      console.log(
+        "Has state:",
+        Boolean(state)
+      );
+
+      console.log(
+        "TikTok error:",
+        error || "none"
+      );
+
+      if (log_id) {
+
+        console.log(
+          "TikTok log_id:",
+          log_id
+        );
+
+      }
+
+
+      /* ================================================
+         TIKTOK RETURNED AN ERROR
+         ================================================ */
 
       if (error) {
 
         return res.status(400).send(
 
           page(
-
             "TikTok Authorization Error",
-
             `
 
             <h1>
               TikTok Authorization Error
             </h1>
 
-            <p>
-              <strong>
-                Error:
-              </strong>
+            <div class="error">
 
-              ${escapeHTML(error)}
+              <p>
+                <strong>
+                  Error:
+                </strong>
 
-            </p>
+                ${escapeHTML(error)}
 
-            <p>
+              </p>
 
-              ${escapeHTML(
-                error_description ||
-                "Authorization was not completed."
-              )}
+              <p>
+                <strong>
+                  Error type:
+                </strong>
 
-            </p>
+                ${escapeHTML(
+                  req.query.error_type ||
+                  "Not provided"
+                )}
+
+              </p>
+
+              <p>
+                ${escapeHTML(
+                  error_description ||
+                  "TikTok did not complete authorization."
+                )}
+              </p>
+
+              ${
+                log_id
+                  ? `
+                    <p class="small">
+                      TikTok log ID:
+                      ${escapeHTML(log_id)}
+                    </p>
+                    `
+                  : ""
+              }
+
+            </div>
 
             <a
               class="button"
@@ -734,7 +963,6 @@ app.get(
             </a>
 
             `
-
           )
 
         );
@@ -742,7 +970,9 @@ app.get(
       }
 
 
-      /* CHECK OAUTH STATE */
+      /* ================================================
+         VERIFY STATE
+         ================================================ */
 
       const savedState =
         req.cookies.tiktok_oauth_state;
@@ -754,12 +984,14 @@ app.get(
         state !== savedState
       ) {
 
+        console.error(
+          "OAuth state verification failed"
+        );
+
         return res.status(400).send(
 
           page(
-
             "Invalid OAuth State",
-
             `
 
             <h1>
@@ -770,6 +1002,10 @@ app.get(
               The OAuth security state could not be verified.
             </p>
 
+            <p>
+              Start the login process again.
+            </p>
+
             <a
               class="button"
               href="/auth/tiktok"
@@ -778,7 +1014,6 @@ app.get(
             </a>
 
             `
-
           )
 
         );
@@ -786,16 +1021,16 @@ app.get(
       }
 
 
-      /* CHECK AUTHORIZATION CODE */
+      /* ================================================
+         REQUIRE AUTHORIZATION CODE
+         ================================================ */
 
       if (!code) {
 
         return res.status(400).send(
 
           page(
-
             "Missing Authorization Code",
-
             `
 
             <h1>
@@ -806,8 +1041,14 @@ app.get(
               TikTok did not return an authorization code.
             </p>
 
-            `
+            <a
+              class="button"
+              href="/"
+            >
+              Return Home
+            </a>
 
+            `
           )
 
         );
@@ -815,7 +1056,14 @@ app.get(
       }
 
 
-      /* EXCHANGE CODE FOR ACCESS TOKEN */
+      /* ================================================
+         EXCHANGE CODE FOR ACCESS TOKEN
+         ================================================ */
+
+      console.log(
+        "Exchanging TikTok authorization code..."
+      );
+
 
       const tokenResponse =
         await fetch(
@@ -832,7 +1080,6 @@ app.get(
             },
 
             body:
-
               new URLSearchParams({
 
                 client_key:
@@ -856,8 +1103,39 @@ app.get(
         );
 
 
-      const tokenData =
-        await tokenResponse.json();
+      const tokenText =
+        await tokenResponse.text();
+
+
+      let tokenData;
+
+      try {
+
+        tokenData =
+          JSON.parse(tokenText);
+
+      } catch {
+
+        tokenData = {
+          raw: tokenText
+        };
+
+      }
+
+
+      console.log(
+        "TikTok token HTTP status:",
+        tokenResponse.status
+      );
+
+      console.log(
+        "TikTok token response:",
+        JSON.stringify(
+          tokenData,
+          null,
+          2
+        )
+      );
 
 
       if (
@@ -865,18 +1143,10 @@ app.get(
         tokenData.error
       ) {
 
-        console.error(
-          "TikTok token response:",
-          tokenData
-        );
-
-
         return res.status(400).send(
 
           page(
-
             "TikTok Token Error",
-
             `
 
             <h1>
@@ -884,61 +1154,36 @@ app.get(
             </h1>
 
             <p>
-              TikTok authorization succeeded, but the server
-              could not exchange the authorization code for a token.
+              TikTok accepted the authorization request,
+              but the server could not exchange the authorization
+              code for an access token.
             </p>
 
-            <p>
-              Check your TikTok Developer configuration and
-              redirect URI.
-            </p>
+            <div class="error">
 
-            <a
-              class="button"
-              href="/"
-            >
-              Return Home
-            </a>
+              <strong>
+                HTTP status:
+              </strong>
 
-            `
+              ${escapeHTML(
+                tokenResponse.status
+              )}
 
-          )
+              <br><br>
 
-        );
+              <strong>
+                TikTok response:
+              </strong>
 
-      }
-
-
-      /* REMOVE OAUTH STATE COOKIE */
-
-      res.clearCookie(
-        "tiktok_oauth_state"
-      );
-
-
-      /* SUCCESS */
-
-      res.send(
-
-        page(
-
-          "TikTok Connected",
-
-          `
-
-          <div class="hero">
-
-            <h1>
-              TikTok Connected
-            </h1>
-
-            <p>
-              Your TikTok authorization was successfully completed.
-            </p>
-
-            <div class="status">
-
-              Authorization successful.
+              <pre style="white-space:pre-wrap;">
+${escapeHTML(
+  JSON.stringify(
+    tokenData,
+    null,
+    2
+  )
+)}
+              </pre>
 
             </div>
 
@@ -949,26 +1194,296 @@ app.get(
               Return Home
             </a>
 
-          </div>
+            `
+          )
 
-          `
+        );
 
+      }
+
+
+      /* ================================================
+         VERIFY ACCESS TOKEN
+         ================================================ */
+
+      const accessToken =
+        tokenData.access_token;
+
+
+      const refreshToken =
+        tokenData.refresh_token;
+
+
+      if (!accessToken) {
+
+        console.error(
+          "No access_token returned by TikTok"
+        );
+
+        return res.status(400).send(
+
+          page(
+            "Missing Access Token",
+            `
+
+            <h1>
+              TikTok Login Error
+            </h1>
+
+            <p>
+              TikTok did not return an access token.
+            </p>
+
+            `
+          )
+
+        );
+
+      }
+
+
+      /* ================================================
+         GET TIKTOK USER PROFILE
+         ================================================ */
+
+      console.log(
+        "Requesting TikTok user information..."
+      );
+
+
+      const userInfoResponse =
+        await fetch(
+          "https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,avatar_url,display_name",
+          {
+
+            method: "GET",
+
+            headers: {
+
+              Authorization:
+                `Bearer ${accessToken}`
+
+            }
+
+          }
+        );
+
+
+      const userInfoText =
+        await userInfoResponse.text();
+
+
+      let userInfoData;
+
+      try {
+
+        userInfoData =
+          JSON.parse(userInfoText);
+
+      } catch {
+
+        userInfoData = {
+          raw: userInfoText
+        };
+
+      }
+
+
+      console.log(
+        "TikTok user info HTTP status:",
+        userInfoResponse.status
+      );
+
+      console.log(
+        "TikTok user info response:",
+        JSON.stringify(
+          userInfoData,
+          null,
+          2
         )
+      );
 
+
+      if (!userInfoResponse.ok) {
+
+        return res.status(400).send(
+
+          page(
+            "TikTok User Info Error",
+            `
+
+            <h1>
+              TikTok User Info Error
+            </h1>
+
+            <p>
+              The access token was received, but TikTok
+              user information could not be retrieved.
+            </p>
+
+            <div class="error">
+
+<pre style="white-space:pre-wrap;">
+${escapeHTML(
+  JSON.stringify(
+    userInfoData,
+    null,
+    2
+  )
+)}
+</pre>
+
+            </div>
+
+            `
+          )
+
+        );
+
+      }
+
+
+      const tiktokUser =
+        userInfoData?.data?.user;
+
+
+      if (!tiktokUser) {
+
+        return res.status(400).send(
+
+          page(
+            "TikTok Profile Error",
+            `
+
+            <h1>
+              TikTok Profile Error
+            </h1>
+
+            <p>
+              TikTok authorization succeeded, but no user
+              profile was returned.
+            </p>
+
+            `
+          )
+
+        );
+
+      }
+
+
+      /* ================================================
+         CREATE APPLICATION SESSION
+         ================================================ */
+
+      const user = {
+
+        open_id:
+          tiktokUser.open_id || null,
+
+        union_id:
+          tiktokUser.union_id || null,
+
+        display_name:
+          tiktokUser.display_name || "TikTok User",
+
+        avatar_url:
+          tiktokUser.avatar_url || null,
+
+        access_token:
+          accessToken,
+
+        refresh_token:
+          refreshToken || null,
+
+        scope:
+          tokenData.scope || "user.info.basic",
+
+        expires_in:
+          tokenData.expires_in || null,
+
+        refresh_expires_in:
+          tokenData.refresh_expires_in || null
+
+      };
+
+
+      const sessionId =
+        createSession(user);
+
+
+      /* ================================================
+         REMOVE OAUTH STATE
+         ================================================ */
+
+      res.clearCookie(
+        "tiktok_oauth_state",
+        {
+          path: "/"
+        }
+      );
+
+
+      /* ================================================
+         CREATE LOGIN COOKIE
+         ================================================ */
+
+      res.cookie(
+        "tiktok_session",
+        sessionId,
+        {
+
+          httpOnly: true,
+
+          secure: true,
+
+          sameSite: "lax",
+
+          maxAge:
+            SESSION_MAX_AGE,
+
+          path: "/"
+
+        }
+      );
+
+
+      console.log(
+        "TikTok login successful"
+      );
+
+      console.log(
+        "TikTok open_id:",
+        user.open_id
+      );
+
+      console.log(
+        "TikTok display name:",
+        user.display_name
+      );
+
+
+      /* ================================================
+         REDIRECT TO DASHBOARD
+         ================================================ */
+
+      return res.redirect(
+        "/dashboard"
       );
 
 
     } catch (error) {
 
-      console.error(error);
+      console.error(
+        "TikTok callback exception:",
+        error
+      );
 
 
-      res.status(500).send(
+      return res.status(500).send(
 
         page(
-
           "Server Error",
-
           `
 
           <h1>
@@ -980,6 +1495,15 @@ app.get(
             TikTok authorization.
           </p>
 
+          <div class="error">
+
+            ${escapeHTML(
+              error.message ||
+              String(error)
+            )}
+
+          </div>
+
           <a
             class="button"
             href="/"
@@ -988,7 +1512,6 @@ app.get(
           </a>
 
           `
-
         )
 
       );
@@ -1000,43 +1523,229 @@ app.get(
 
 
 /* =========================================================
-   ESCAPE HTML
+   DASHBOARD
    ========================================================= */
 
-function escapeHTML(value) {
+app.get(
+  "/dashboard",
+  (req, res) => {
 
-  return String(value)
+    const session =
+      getSession(req);
 
-    .replace(
-      /&/g,
-      "&amp;"
-    )
 
-    .replace(
-      /</g,
-      "&lt;"
-    )
+    if (!session) {
 
-    .replace(
-      />/g,
-      "&gt;"
-    )
+      return res.redirect(
+        "/auth/tiktok"
+      );
 
-    .replace(
-      /"/g,
-      "&quot;"
-    )
+    }
 
-    .replace(
-      /'/g,
-      "&#039;"
+
+    const user =
+      session.user;
+
+
+    const avatar =
+      user.avatar_url
+        ? `
+          <img
+            src="${escapeHTML(user.avatar_url)}"
+            alt="TikTok profile image"
+          >
+          `
+        : "";
+
+
+    res.send(
+
+      page(
+        "TikTok Dashboard",
+        `
+
+        <div class="profile">
+
+          <h1>
+            TikTok Dashboard
+          </h1>
+
+          ${avatar}
+
+          <h2>
+            ${escapeHTML(
+              user.display_name
+            )}
+          </h2>
+
+          <div class="status">
+
+            <strong>
+              Login successful
+            </strong>
+
+          </div>
+
+        </div>
+
+        <div class="card">
+
+          <h2>
+            Account Information
+          </h2>
+
+          <p>
+            <strong>
+              Display name:
+            </strong>
+
+            ${escapeHTML(
+              user.display_name
+            )}
+          </p>
+
+          <p>
+            <strong>
+              Open ID:
+            </strong>
+
+            ${escapeHTML(
+              user.open_id
+            )}
+          </p>
+
+          <p>
+            <strong>
+              Scope:
+            </strong>
+
+            ${escapeHTML(
+              user.scope
+            )}
+          </p>
+
+        </div>
+
+        <div class="card">
+
+          <p>
+            Your TikTok access token is stored
+            server-side and is not displayed here.
+          </p>
+
+        </div>
+
+        <div style="text-align:center">
+
+          <a
+            class="button logout"
+            href="/logout"
+          >
+            Logout
+          </a>
+
+        </div>
+
+        `
+      )
+
     );
 
-}
+  }
+);
 
 
 /* =========================================================
-   404 HANDLER
+   SESSION STATUS API
+   ========================================================= */
+
+app.get(
+  "/api/session",
+  (req, res) => {
+
+    const session =
+      getSession(req);
+
+
+    if (!session) {
+
+      return res.json({
+
+        logged_in: false
+
+      });
+
+    }
+
+
+    res.json({
+
+      logged_in: true,
+
+      user: {
+
+        open_id:
+          session.user.open_id,
+
+        union_id:
+          session.user.union_id,
+
+        display_name:
+          session.user.display_name,
+
+        avatar_url:
+          session.user.avatar_url,
+
+        scope:
+          session.user.scope
+
+      }
+
+    });
+
+  }
+);
+
+
+/* =========================================================
+   LOGOUT
+   ========================================================= */
+
+app.get(
+  "/logout",
+  (req, res) => {
+
+    const sessionId =
+      req.cookies.tiktok_session;
+
+
+    if (sessionId) {
+
+      sessions.delete(
+        sessionId
+      );
+
+    }
+
+
+    res.clearCookie(
+      "tiktok_session",
+      {
+        path: "/"
+      }
+    );
+
+
+    res.redirect(
+      "/"
+    );
+
+  }
+);
+
+
+/* =========================================================
+   404
    ========================================================= */
 
 app.use(
@@ -1045,9 +1754,7 @@ app.use(
     res.status(404).send(
 
       page(
-
         "Page Not Found",
-
         `
 
         <h1>
@@ -1066,7 +1773,6 @@ app.use(
         </a>
 
         `
-
       )
 
     );
@@ -1110,6 +1816,11 @@ app.listen(
     console.log(
       "TikTok client configured:",
       Boolean(CLIENT_KEY)
+    );
+
+    console.log(
+      "TikTok secret configured:",
+      Boolean(CLIENT_SECRET)
     );
 
     console.log(
